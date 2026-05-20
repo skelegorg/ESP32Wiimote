@@ -94,7 +94,12 @@ public:
   AccelState getAccelState(void);
   NunchukState getNunchukState(void);
   IRState getIRState(void);
+
   void addFilter(int action, int filter);
+
+  void useAccel(bool use);
+  void useIRCamera(bool use);
+  void setIRSens(uint8_t sens);
 
 private:
 

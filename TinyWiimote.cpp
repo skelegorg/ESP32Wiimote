@@ -141,8 +141,6 @@ static bool useAccelerometer = true;
 static bool useIR = false;
 static uint8_t irMode = 3;
 
-uint8_t GetDataReportingMode(bool acc, bool ir, bool ext);
-static void setIRCamera(uint16_t ch);
 
 // Default to Wii level 3 (mid sens)
 static uint8_t sensitivity_mode = 2;
@@ -816,6 +814,25 @@ static void setPlayerLEDs(uint16_t ch, uint8_t leds) {
   VERBOSE_PRINT("queued acl_l2cap_single_packet(Set LEDs)");
 }
 
+static void requestStatusReport(uint16_t ch) {
+  int idx = l2capFindConnection(ch);
+  struct l2cap_connection_t connection = l2capConnectionList[idx];
+
+  uint8_t  pbf = 0b10;
+  uint8_t  bf = 0b00;
+  uint16_t channelID = connection.remoteCID;
+
+  // wiimote report: (a2) 15 00 -- elicits a (a1) 20 ... status report
+  uint8_t posi = 0;
+  payload[posi++] = 0xA2;
+  payload[posi++] = 0x15;
+  payload[posi++] = 0x00;
+  uint16_t dataLen = posi;
+  uint16_t len = make_acl_l2cap_packet(tmpQueueData, ch, pbf, bf, channelID, payload, dataLen);
+  sendHciPacket(tmpQueueData, len);
+  VERBOSE_PRINT("queued acl_l2cap_single_packet(Request Status Report)");
+}
+
 static void enableIRPixelClock(uint16_t ch) {
     int idx = l2capFindConnection(ch);
     struct l2cap_connection_t connection = l2capConnectionList[idx];
@@ -827,7 +844,7 @@ static void enableIRPixelClock(uint16_t ch) {
     uint8_t posi = 0;
     payload[posi++] = 0xA2;  // Output report
     payload[posi++] = 0x13; // Enable IR Pixel Clock
-    payload[posi++] = 0x04;
+    payload[posi++] = 0x06; // 0x02 byte forces an ACK which is needed to advance setIRCamera
     uint16_t dataLen = posi;
     uint16_t len = make_acl_l2cap_packet(tmpQueueData, ch, pbf, bf, channelID, payload, dataLen);
     sendHciPacket(tmpQueueData, len);
@@ -845,7 +862,7 @@ static void enableIRLogic(uint16_t ch) {
     uint8_t posi = 0;
     payload[posi++] = 0xA2;  // Output report
     payload[posi++] = 0x1A; // Enable IR Logic
-    payload[posi++] = 0x04;
+    payload[posi++] = 0x06; //
     uint16_t dataLen = posi;
     uint16_t len = make_acl_l2cap_packet(tmpQueueData, ch, pbf, bf, channelID, payload, dataLen);
     sendHciPacket(tmpQueueData, len);
@@ -1124,14 +1141,21 @@ static void handleL2capData(uint16_t ch, uint16_t channelID, uint8_t* data, uint
         wiimoteConnected = true;
         // ignore extension + IR until the extension can be verified
         setDataReportingMode(ch, GetDataReportingMode(useAccelerometer, false, false), false);
-
+        requestStatusReport(ch);
       }
       handleExtensionControllerReports(ch, channelID, data, len);
 
-      if(useIR && data[1] == 0x22 && (data[4] == 0x13 || data[4] == 0x1A || data[4] == 0x16
-            && irCameraEnableState != IR_CAMERA_UNINITIALIZED
-            && irCameraEnableState != IR_NOTHING_TO_DO))
-          setIRCamera(ch);
+      if (useIR && data[1] == 0x22) {
+          bool ack_for_ir_enable = (data[4] == 0x13 || data[4] == 0x1A);
+          bool ack_for_ir_write  = (data[4] == 0x16) &&
+              (irCameraEnableState == IR_CAMERA_SENT_FIRST_08 ||
+               irCameraEnableState == IR_CAMERA_SENT_SENS_1   ||
+               irCameraEnableState == IR_CAMERA_SENT_SENS_2   ||
+               irCameraEnableState == IR_CAMERA_SENT_MODE     ||
+               irCameraEnableState == IR_CAMERA_DONE);
+          if (ack_for_ir_enable || ack_for_ir_write)
+              setIRCamera(ch);
+      }
 
       handleReport(data, len);
       break;

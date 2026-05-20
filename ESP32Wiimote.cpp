@@ -426,3 +426,15 @@ void ESP32Wiimote::addFilter(int action, int filter) {
       TinyWiimoteReqAccelerometer(false);
   }
 }
+
+void ESP32Wiimote::useIRCamera(bool use) {
+    TinyWiimoteReqIR(use);
+}
+
+void ESP32Wiimote::useAccel(bool use) {
+    TinyWiimoteReqAccelerometer(use);
+}
+
+void ESP32Wiimote::setIRSens(uint8_t sens) {
+    TinyWiimoteReqIRSensitivity(sens);
+}

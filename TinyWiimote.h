@@ -33,10 +33,15 @@ void TinyWiimoteInit(TwHciInterface hciInterface);
 int TinyWiimoteAvailable(void);
 TinyWiimoteData TinyWiimoteRead(void);
 
+uint8_t GetDataReportingMode(bool acc, bool ir, bool ext);
+static void setIRCamera(uint16_t ch);
+
 void TinyWiimoteResetDevice(void);
 bool TinyWiimoteDeviceIsInited(void);
 
 void TinyWiimoteReqAccelerometer(bool use);
+void TinyWiimoteReqIR(bool use);
+void TinyWiimoteReqIRSensitivity(uint8_t mode);
 
 void handleHciData(uint8_t* data, size_t len);
 
