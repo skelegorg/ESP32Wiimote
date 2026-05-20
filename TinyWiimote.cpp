@@ -120,10 +120,47 @@ enum {
 #define HCIC_PARAM_SIZE_WRITE_INQUIRY_CANCEL (0)
 #define HCIC_PARAM_SIZE_WRITE_INQUIRY (5)
 
+#define IR_CAMERA_UNINITIALIZED 0
+#define IR_CAMERA_SENT_13 1
+#define IR_CAMERA_SENT_1A 2
+#define IR_CAMERA_SENT_FIRST_08 3
+#define IR_CAMERA_SENT_SENS_1 4
+#define IR_CAMERA_SENT_SENS_2 5
+#define IR_CAMERA_SENT_MODE 6
+#define IR_CAMERA_DONE 7
+#define IR_NOTHING_TO_DO 8
+
+static int irCameraEnableState = IR_CAMERA_UNINITIALIZED;
+
+static uint8_t ir_enable_byte = 0x08;
+
 static bool deviceInited = false;
 static bool wiimoteConnected = false;
 static bool nunchukConnected = false;
 static bool useAccelerometer = true;
+static bool useIR = false;
+static uint8_t irMode = 3;
+
+
+// Default to Wii level 3 (mid sens)
+static uint8_t sensitivity_mode = 2;
+
+// Sensitivity settings from https://wiibrew.org/wiki/Wiimote#IR_Camera
+const static uint8_t sens_block_1[5][9] = {
+    {0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0x64, 0x00, 0xfe},
+    {0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0x96, 0x00, 0xb4},
+    {0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0xaa, 0x00, 0x64},
+    {0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0xc8, 0x00, 0x35},
+    {0x07, 0x00, 0x00, 0x71, 0x01, 0x00, 0x72, 0x00, 0x20},
+};
+
+const static uint8_t sens_block_2[5][2] = {
+    {0xfd, 0x05},
+    {0xb3, 0x04},
+    {0x63, 0x03},
+    {0x35, 0x03},
+    {0x1f, 0x03},
+};
 
 /**
  * Command Maker
@@ -480,7 +517,7 @@ static void handleInquiryResultEvent(uint8_t len, uint8_t* data) {
 
         idx = connected_device_add(connected_device);
         if(0<=idx){
-            if(data[pos+9]==0x04 && data[pos+10]==0x25 && data[pos+11]==0x00){ // Filter for Wiimote [04 25 00] 
+            if(data[pos+9]==0x04 && data[pos+10]==0x25 && data[pos+11]==0x00){ // Filter for Wiimote [04 25 00]
                 uint16_t len = make_cmd_remote_name_request(tmpQueueData, connected_device.bdAddr, connected_device.psrm, connected_device.clkofs);
                 sendHciPacket(tmpQueueData, len);
                 //log_d("    connected_list_add n=%d", n);
@@ -583,6 +620,7 @@ static void handleDisconnectionCompleteEvent(uint8_t len, uint8_t* data) {
     UNVERBOSE_PRINT("Wiimote lost\n");
     wiimoteConnected = false;
     nunchukConnected = false;
+    irCameraEnableState = IR_CAMERA_UNINITIALIZED;
     resetDevice();
 }
 
@@ -776,6 +814,61 @@ static void setPlayerLEDs(uint16_t ch, uint8_t leds) {
   VERBOSE_PRINT("queued acl_l2cap_single_packet(Set LEDs)");
 }
 
+static void requestStatusReport(uint16_t ch) {
+  int idx = l2capFindConnection(ch);
+  struct l2cap_connection_t connection = l2capConnectionList[idx];
+
+  uint8_t  pbf = 0b10;
+  uint8_t  bf = 0b00;
+  uint16_t channelID = connection.remoteCID;
+
+  // wiimote report: (a2) 15 00 -- elicits a (a1) 20 ... status report
+  uint8_t posi = 0;
+  payload[posi++] = 0xA2;
+  payload[posi++] = 0x15;
+  payload[posi++] = 0x00;
+  uint16_t dataLen = posi;
+  uint16_t len = make_acl_l2cap_packet(tmpQueueData, ch, pbf, bf, channelID, payload, dataLen);
+  sendHciPacket(tmpQueueData, len);
+  VERBOSE_PRINT("queued acl_l2cap_single_packet(Request Status Report)");
+}
+
+static void enableIRPixelClock(uint16_t ch) {
+    int idx = l2capFindConnection(ch);
+    struct l2cap_connection_t connection = l2capConnectionList[idx];
+
+    uint8_t  pbf = 0b10; // Packet Boundary Flag
+    uint8_t  bf = 0b00; // Broadcast Flag
+    uint16_t channelID           = connection.remoteCID;
+
+    uint8_t posi = 0;
+    payload[posi++] = 0xA2;  // Output report
+    payload[posi++] = 0x13; // Enable IR Pixel Clock
+    payload[posi++] = 0x06; // 0x02 byte forces an ACK which is needed to advance setIRCamera
+    uint16_t dataLen = posi;
+    uint16_t len = make_acl_l2cap_packet(tmpQueueData, ch, pbf, bf, channelID, payload, dataLen);
+    sendHciPacket(tmpQueueData, len);
+    VERBOSE_PRINT("queued acl_l2cap_single_packet(Enable IR Pixel Clock)");
+}
+
+static void enableIRLogic(uint16_t ch) {
+    int idx = l2capFindConnection(ch);
+    struct l2cap_connection_t connection = l2capConnectionList[idx];
+
+    uint8_t  pbf = 0b10; // Packet Boundary Flag
+    uint8_t  bf = 0b00; // Broadcast Flag
+    uint16_t channelID           = connection.remoteCID;
+
+    uint8_t posi = 0;
+    payload[posi++] = 0xA2;  // Output report
+    payload[posi++] = 0x1A; // Enable IR Logic
+    payload[posi++] = 0x06; //
+    uint16_t dataLen = posi;
+    uint16_t len = make_acl_l2cap_packet(tmpQueueData, ch, pbf, bf, channelID, payload, dataLen);
+    sendHciPacket(tmpQueueData, len);
+    VERBOSE_PRINT("queued acl_l2cap_single_packet(Enable IR Logic)");
+}
+
 enum address_space_t {
   EEPROM_MEMORY,
   CONTROL_REGISTER
@@ -898,11 +991,10 @@ static void handleExtensionControllerReports(uint16_t ch, uint16_t channelID, ui
       }else{ // extension controller is NOT connected
           UNVERBOSE_PRINT("Extension controller NOT connected\n");
           nunchukConnected = false;
-          if (useAccelerometer)
-            setDataReportingMode(ch, 0x31, false); // Core Buttons and Accelerometer: 31 BB BB AA AA AA
-          else
-            setDataReportingMode(ch, 0x30, false); // Core Buttons : 30 BB BB
-        // [note] Core Buttons and Accelerometer with 12 IR bytes: 33 BB BB AA AA AA II II II II II II II II II II II II 
+          setDataReportingMode(ch, GetDataReportingMode(useAccelerometer, false, nunchukConnected), false);
+          // initialize IR now that extension isn't present
+          if(useIR)
+              setIRCamera(ch);
       }
     }
     break;
@@ -940,16 +1032,58 @@ static void handleExtensionControllerReports(uint16_t ch, uint16_t channelID, ui
         if(memcmp(data+7, (const uint8_t[]){0x00, 0x00, 0xA4, 0x20, 0x00, 0x00}, 6) == 0){ // Nunchuk
           UNVERBOSE_PRINT("Nunchuk detected\n");
           nunchukConnected = true;
-          if (useAccelerometer)
-            setDataReportingMode(ch, 0x35, false); // Core Buttons and Accelerometer with 16 Extension bytes: 35 BB BB AA AA AA EE EE ...
-          else
-            setDataReportingMode(ch, 0x32, false); // Core Buttons with 8 Extension bytes : 32 BB BB EE EE EE EE EE EE EE EE
+          setDataReportingMode(ch, GetDataReportingMode(useAccelerometer, false, nunchukConnected), false);
+          if(useIR)
+              setIRCamera(ch);
         }
         controllerReportState = REPORT_STATE_INIT;
       }
     }
     break;
   }
+}
+
+static void setIRCamera(uint16_t ch) {
+
+    // https://wiibrew.org/wiki/Wiimote#IR_Camera
+
+    switch(irCameraEnableState) {
+        case IR_CAMERA_UNINITIALIZED:
+            enableIRPixelClock(ch);
+            irCameraEnableState = IR_CAMERA_SENT_13;
+            break;
+        case IR_CAMERA_SENT_13:
+            enableIRLogic(ch);
+            irCameraEnableState = IR_CAMERA_SENT_1A;
+            break;
+        case IR_CAMERA_SENT_1A:
+            writingEEPROM(ch, CONTROL_REGISTER, 0xB00030, &ir_enable_byte, 1);
+            irCameraEnableState = IR_CAMERA_SENT_FIRST_08;
+            break;
+        case IR_CAMERA_SENT_FIRST_08:
+            writingEEPROM(ch, CONTROL_REGISTER, 0xB00000, sens_block_1[sensitivity_mode], 9);
+            irCameraEnableState = IR_CAMERA_SENT_SENS_1;
+            break;
+        case IR_CAMERA_SENT_SENS_1:
+            writingEEPROM(ch, CONTROL_REGISTER, 0xB0001A, sens_block_2[sensitivity_mode], 2);
+            irCameraEnableState = IR_CAMERA_SENT_SENS_2;
+            break;
+        case IR_CAMERA_SENT_SENS_2:
+            (void)GetDataReportingMode(useAccelerometer, useIR, nunchukConnected);
+            writingEEPROM(ch, CONTROL_REGISTER, 0xB00033, &irMode, 1);
+            irCameraEnableState = IR_CAMERA_SENT_MODE;
+            break;
+        case IR_CAMERA_SENT_MODE:
+            writingEEPROM(ch, CONTROL_REGISTER, 0xB00030, &ir_enable_byte, 1);
+            irCameraEnableState = IR_CAMERA_DONE;
+            break;
+        case IR_CAMERA_DONE:
+            setDataReportingMode(ch, GetDataReportingMode(useAccelerometer, useIR, nunchukConnected), false);
+            irCameraEnableState = IR_NOTHING_TO_DO;
+            break;
+        case IR_NOTHING_TO_DO:
+            break;
+    }
 }
 
 
@@ -1005,10 +1139,24 @@ static void handleL2capData(uint16_t ch, uint16_t channelID, uint8_t* data, uint
         setPlayerLEDs(ch, 0b0001);
         UNVERBOSE_PRINT("Wiimote detected\n");
         wiimoteConnected = true;
-        if (useAccelerometer)
-          setDataReportingMode(ch, 0x31, false); // Core Buttons and Accelerometer: 31 BB BB AA AA AA
+        // ignore extension + IR until the extension can be verified
+        setDataReportingMode(ch, GetDataReportingMode(useAccelerometer, false, false), false);
+        requestStatusReport(ch);
       }
       handleExtensionControllerReports(ch, channelID, data, len);
+
+      if (useIR && data[1] == 0x22) {
+          bool ack_for_ir_enable = (data[4] == 0x13 || data[4] == 0x1A);
+          bool ack_for_ir_write  = (data[4] == 0x16) &&
+              (irCameraEnableState == IR_CAMERA_SENT_FIRST_08 ||
+               irCameraEnableState == IR_CAMERA_SENT_SENS_1   ||
+               irCameraEnableState == IR_CAMERA_SENT_SENS_2   ||
+               irCameraEnableState == IR_CAMERA_SENT_MODE     ||
+               irCameraEnableState == IR_CAMERA_DONE);
+          if (ack_for_ir_enable || ack_for_ir_write)
+              setIRCamera(ch);
+      }
+
       handleReport(data, len);
       break;
     default:
@@ -1091,4 +1239,43 @@ void TinyWiimoteInit(TwHciInterface hciInterface) {
 
 void TinyWiimoteReqAccelerometer(bool use) {
     useAccelerometer = use;
+}
+
+void TinyWiimoteReqIR(bool use) {
+    useIR = use;
+}
+
+void TinyWiimoteReqIRSensitivity(uint8_t mode) {
+    // accept 0-4
+    if(mode > 4)
+        sensitivity_mode = 4;
+    else
+        sensitivity_mode = mode;
+}
+
+uint8_t GetDataReportingMode(bool acc, bool ir, bool ext) {
+    if(acc && ir && ext) {
+        // 10 IR bytes: basic mode
+        irMode = 1;
+        return 0x37; // Core Buttons and Accelerometer with 10 IR bytes and 6 Extension Bytes
+    } else if(acc && ir && !ext) {
+        // 12 IR bytes: extended mode
+        irMode = 3;
+        return 0x33; // Core Buttons and Accelerometer with 12 IR bytes
+    }
+    else if(acc && !ir && ext)
+        return 0x35; // Core Buttons and Accelerometer with 16 Extension Bytes
+    else if(acc && !ir && !ext)
+        return 0x31; // Core Buttons and Accelerometer
+    else if(!acc && !ir && ext)
+        return 0x32; // Core Buttons with 8 Extension bytes
+    else if(!acc && ir && ext) {
+        // 10 IR bytes: basic mode
+        irMode = 1;
+        return 0x36;
+    } else {
+        return 0x30;
+    }
+
+    // don't currently support full IR mode (36 IR bytes, interleaved accelerometer data)
 }

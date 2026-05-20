@@ -8,10 +8,13 @@ static int num_run = 0, num_updates = 0;
 
 void setup()
 {
-    Serial.begin(115200);
+    Serial.begin(460800);
     Serial.println("ESP32Wiimote");
     
     wiimote.init();
+    
+    wiimote.useIRCamera(true);
+
     if (! logging)
         wiimote.addFilter(ACTION_IGNORE, FILTER_ACCEL); // optional
     
@@ -29,6 +32,7 @@ void loop()
         ButtonState  button  = wiimote.getButtonState();
         AccelState   accel   = wiimote.getAccelState();
         NunchukState nunchuk = wiimote.getNunchukState();
+        IRState ir = wiimote.getIRState();
 
         num_updates++;
         if (logging)
@@ -63,7 +67,11 @@ void loop()
             Serial.print(cdown);
             Serial.printf(", wiimote.axis: %3d/%3d/%3d", accel.xAxis, accel.yAxis, accel.zAxis);
             Serial.printf(", nunchuk.axis: %3d/%3d/%3d", nunchuk.xAxis, nunchuk.yAxis, nunchuk.zAxis);
-            Serial.printf(", nunchuk.stick: %3d/%3d\n", nunchuk.xStick, nunchuk.yStick);
+            Serial.printf(", nunchuk.stick: %3d/%3d", nunchuk.xStick, nunchuk.yStick);
+            for(int i = 0; i < 4; i++) {
+                Serial.printf(", IR Object %d visible? %d: (%d, %d) size %d, ", i, ir.dot[i].visible, ir.dot[i].x, ir.dot[i].y, ir.dot[i].size);
+            }
+            Serial.printf("\n");
         }
     }
 
