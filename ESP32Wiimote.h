@@ -17,6 +17,9 @@
 
 #include "esp_bt.h"
 #include "TinyWiimote.h"
+#include <cstdint>
+
+#define IR_SIZE_UNKNOWN 0xFF
 
 typedef struct {
     uint8_t xAxis;
@@ -52,6 +55,18 @@ typedef struct {
 //      uint8_t zBtn;
 } NunchukState;
 
+// if size is IR_SIZE_UNKNOWN - IR mode is basic
+typedef struct {
+    uint16_t x;
+    uint16_t y;
+    uint8_t size;
+    bool visible;
+} IRDot;
+
+typedef struct {
+    IRDot dot[4];
+} IRState;
+
 enum
 {
   FILTER_NONE                = 0x0000,
@@ -59,6 +74,7 @@ enum
 //FILTER_NUNCHUK_BUTTON      = 0x0002,
   FILTER_NUNCHUK_STICK       = 0x0004,
   FILTER_ACCEL               = 0x0008,
+  FILTER_IR                  = 0x0010,
 };
 
 enum
@@ -77,6 +93,7 @@ public:
   ButtonState getButtonState(void);
   AccelState getAccelState(void);
   NunchukState getNunchukState(void);
+  IRState getIRState(void);
   void addFilter(int action, int filter);
 
 private:
@@ -94,6 +111,9 @@ private:
 
   NunchukState _nunchukState;
   NunchukState _oldNunchukState;
+
+  IRState _IRState;
+  IRState _oldIRState;
 
   int _nunStickThreshold;
 

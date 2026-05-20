@@ -153,7 +153,7 @@ void ESP32Wiimote::init(void)
     TinyWiimoteInit(tinywii_hci_interface);
     createQueue();
     vhci_callback.notify_host_recv = notifyHostRecv;
-    vhci_callback.notify_host_send_available = notifyHostSendAvailable;    
+    vhci_callback.notify_host_send_available = notifyHostSendAvailable;
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     if (!btStart()) {
@@ -183,6 +183,7 @@ int ESP32Wiimote::available(void)
 //  int nunchukButtonIsChanged = false;
     int accelIsChanged = false;
     int nunchukStickIsChanged = false;
+    int IRIsChanged = false;
     uint8_t cBtn = 0;
     uint8_t zBtn = 0;
 
@@ -191,15 +192,16 @@ int ESP32Wiimote::available(void)
 
     TinyWiimoteData rd = TinyWiimoteRead();
 
-    if (rd.len < 4) // 
+    if (rd.len < 4) //
         return 0;
     if (rd.data[0] != 0xA1) // no data input
         return 0;
-      
+
     // update old states
     _oldButtonState  = _buttonState;
     _oldAccelState   = _accelState;
     _oldNunchukState = _nunchukState;
+    _oldIRState = _IRState;
 
     if ((rd.data[1] >= 0x30) && (rd.data[1] <= 0x37)) // data report with button data
         offs = 2;
@@ -211,7 +213,9 @@ int ESP32Wiimote::available(void)
     switch (rd.data[1])
     {
     case 0x31: offs = 4; break; // Core Buttons and Accelerometer
+    case 0x33: offs = 4; break; // Core Buttons and Accel with 12 IR bytes
     case 0x35: offs = 4; break; // Core Buttons and Accelerometer with 16 Extension Bytes
+    case 0x37: offs = 4; break; // Core Buttons and Accel with 10 IR bytes and 6 Extension Bytes
     default:   offs = 0;
     }
 
@@ -241,6 +245,8 @@ int ESP32Wiimote::available(void)
     {
     case 0x32: offs = 4; break; // Core Buttons with 8 Extension bytes
     case 0x35: offs = 7; break; // Core Buttons and Accelerometer with 16 Extension Bytes
+    case 0x36: offs = 14; break; // Core Buttons with 10 IR bytes and 9 Extension Bytes
+    case 0x37: offs = 17; break; // Core Buttons and Accel with 10 IR bytes and 6 Extension Bytes
     default:   offs = 0;
     }
 
@@ -264,7 +270,7 @@ int ESP32Wiimote::available(void)
         _nunchukState.yAxis  = 0;
         _nunchukState.zAxis  = 0;
     }
-    
+
 
     // add nunchuk buttons
     if (cBtn)
@@ -313,11 +319,83 @@ int ESP32Wiimote::available(void)
         }
     }
 
+    // get IR offset
+    switch(rd.data[1]) {
+        case 0x33: offs = 7; break; // Core Buttons and Accelerometer with 12 IR bytes
+        case 0x36: offs = 4; break; // Core Buttons with 10 IR bytes and 9 Extension Bytes
+        case 0x37: offs = 7; break; // Core Buttons and Accelerometer with 10 IR bytes and 6 Extension Bytes
+        default: offs = 0;
+    }
+
+    // handle IR data loading
+    if(offs) {
+        // 0x33 - extended
+        if(rd.data[1] == 0x33) {
+            // handle extended data
+            uint16_t x;
+            uint16_t y;
+            uint8_t size;
+
+            for(int i = 0; i < 4; i++) {
+                x = 0; y = 0; size = 0;
+                x = rd.data[offs + (3 * i)];
+                x |= ((rd.data[offs + (3 * i) + 2] & 0x30) << 4);
+                y = rd.data[offs + (3 * i) + 1];
+                y |= ((rd.data[offs + (3 * i) + 2] & 0xC0) << 2);
+                size = rd.data[offs + (3 * i) + 2] & 0x0F;
+
+                _IRState.dot[i].x = x;
+                _IRState.dot[i].y = y;
+                _IRState.dot[i].size = size;
+                _IRState.dot[i].visible = !(x == 0x3FF && y == 0x3FF);
+            }
+
+        } else { // 0x36 and 0x37
+            // handle basic data
+            int x1;
+            int x2;
+            int y1;
+            int y2;
+            for(int i = 0; i < 2; i++) {
+                x1 = 0; x2 = 0; y1 = 0; y2 = 0;
+
+                x1 = rd.data[offs + (5 * i)];
+                x1 |= ((rd.data[offs + (5 * i) + 2] & 0x30) << 4);
+                y1 = rd.data[offs + (5 * i) + 1];
+                y1 |= ((rd.data[offs + (5 * i) + 2] & 0xC0) << 2);
+
+                x2 = rd.data[offs + (5 * i) + 3];
+                x2 |= ((rd.data[offs + (5 * i) + 2] & 0x03) << 8);
+                y2 = rd.data[offs + (5 * i) + 4];
+                y2 |= ((rd.data[offs + (5 * i) + 2] & 0x0C) << 6);
+
+                _IRState.dot[2 * i].x = x1;
+                _IRState.dot[2 * i].y = y1;
+                _IRState.dot[2 * i].size = IR_SIZE_UNKNOWN;
+                _IRState.dot[2 * i].visible = !(x1 == 0x3FF && y1 == 0x3FF);
+
+
+                _IRState.dot[(2 * i) + 1].x = x2;
+                _IRState.dot[(2 * i) + 1].y = y2;
+                _IRState.dot[(2 * i) + 1].size = IR_SIZE_UNKNOWN;
+                _IRState.dot[(2 * i) + 1].visible = !(x2 == 0x3FF && y2 == 0x3FF);
+            }
+        }
+
+        if(_filter & FILTER_IR) {
+            ; // ignore
+        } else {
+            IRIsChanged = true;
+        }
+
+    }
+
     return
         ( buttonIsChanged
         | nunchukStickIsChanged
 //      | nunchukButtonIsChanged
         | accelIsChanged
+        | IRIsChanged
         );
 }
 
@@ -336,6 +414,10 @@ NunchukState ESP32Wiimote::getNunchukState(void)
   return _nunchukState;
 }
 
+IRState ESP32Wiimote::getIRState(void) {
+    return _IRState;
+}
+
 void ESP32Wiimote::addFilter(int action, int filter) {
   if (action == ACTION_IGNORE) {
     _filter = _filter | filter;
@@ -344,4 +426,3 @@ void ESP32Wiimote::addFilter(int action, int filter) {
       TinyWiimoteReqAccelerometer(false);
   }
 }
-
